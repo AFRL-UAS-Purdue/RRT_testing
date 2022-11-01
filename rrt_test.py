@@ -1,7 +1,42 @@
 '''
 MIT License
 Copyright (c) 2019 Fanjin Zeng
-This work is licensed under the terms of the MIT license, see <https://opensource.org/licenses/MIT>.  
+This work is licensed under the terms of the MIT license, see <https://opensource.org/licenses/MIT>.
+
+Notes:
+	How often to plan a new route?
+	-When a new obstacle data comes from octomap
+		-When endpoint is determined to be inside of an obstacle
+	-When the rover is a certain distance away from the last endpoint
+	-When the drone reaches the endpoint
+	
+	How to determine and endpoint given a rover location?
+	-Draw a ring around the rover and make the endpoint the closest point on the ring to the drone
+	-Point must not be inside of an obstacle
+	-Ideally the endpoint should be behind the rover so that it can see the rover while flying forward
+	
+	How to determine z dimension?
+	-Fly at the height neccessary to keep the drone in the vertical center of the camera FOV
+		-Need to decide on a camera angle
+		-If we can't change angle, just pick a good angle from the rover to maintain
+	-Ignore tunnel and just go around it?
+	
+	How to determine the yaw direction of the drone?
+	-Either point directly at the rover or in the direction of travel
+		-Direction of travel better for obstacle avoidance and at rover better for object tracking
+	-Should point at the rover once it is near or has reached the rover
+	
+	-Need to find a step size and iteration number that works for the competition environment
+	
+	-Need to be set up for arbitrary obstacle shapes instead of just circles
+	
+Needed inputs from rover tracking:
+	-Current position of rover when in view
+	
+	Path planning could do these if needed:
+	-Velocity vector of rover
+	-Predicted position of rover when out of view
+		-probably just use last velocity vector to keep updating position
 '''
 
 import numpy as np
@@ -168,66 +203,47 @@ def RRT(startpos, endpos, obstacles, n_iter, radius, stepSize):
 		G.add_edge(newidx, nearidx, dist)
 
 		dist = distance(newvex, G.endpos)
-		if dist < 2 * radius:
+		#if dist < 2 * radius:
+		if not isThruObstacle(Line(newvex, G.endpos), obstacles, radius):
 			endidx = G.add_vex(G.endpos)
 			G.add_edge(newidx, endidx, dist)
 			G.success = True
 			#print('success')
-			# break
+			break
 	return G
 
 
-def RRT_star(startpos, endpos, obstacles, n_iter, radius, stepSize):
-	''' RRT star algorithm '''
-	G = Graph(startpos, endpos)
-
-	for _ in range(n_iter):
-		randvex = G.randomPosition()
-		if isInObstacle(randvex, obstacles, radius):
-			continue
-
-		nearvex, nearidx = nearest(G, randvex, obstacles, radius)
-		if nearvex is None:
-			continue
-
-		newvex = newVertex(randvex, nearvex, stepSize)
-
-		newidx = G.add_vex(newvex)
-		dist = distance(newvex, nearvex)
-		G.add_edge(newidx, nearidx, dist)
-		G.distances[newidx] = G.distances[nearidx] + dist
-
-		# update nearby vertices distance (if shorter)
-		for vex in G.vertices:
-			if vex == newvex:
-				continue
-
-			dist = distance(vex, newvex)
-			if dist > radius:
-				continue
-
-			line = Line(vex, newvex)
-			if isThruObstacle(line, obstacles, radius):
-				continue
-
-			idx = G.vex2idx[vex]
-			if G.distances[newidx] + dist < G.distances[idx]:
-				G.add_edge(idx, newidx, dist)
-				G.distances[idx] = G.distances[newidx] + dist
-
-		dist = distance(newvex, G.endpos)
-		if dist < 2 * radius:
-			endidx = G.add_vex(G.endpos)
-			G.add_edge(newidx, endidx, dist)
-			try:
-				G.distances[endidx] = min(G.distances[endidx], G.distances[newidx]+dist)
-			except:
-				G.distances[endidx] = G.distances[newidx]+dist
-
-			G.success = True
-			#print('success')
-			# break
-	return G
+def simplify_path(path, obstacles, radius):
+	'''
+	minimizes the number of segments in path
+	'''
+	p0idx = 0
+	p1idx = 1
+	newPath = [0 for i in range(len(path))]
+	newPath[0] = path[0]
+	newPathIdx = 1
+	completed = False
+	
+	while not completed:
+		p0 = path[p0idx]
+		p1 = path[p1idx]
+		line = Line(p0, p1)
+		
+		if isThruObstacle(line, obstacles, radius):
+			newPath[newPathIdx] = path[p1idx - 1]
+			p0idx = p1idx - 1
+			newPathIdx += 1
+			
+		elif p1idx == len(path) - 1:
+			newPath[newPathIdx] = path[p1idx]
+			completed = True
+			
+		else:
+			p1idx += 1
+			
+	newPath = [j for j in newPath if j != 0]
+		
+	return newPath
 
 
 
@@ -294,31 +310,25 @@ def plot(G, obstacles, radius, path=None):
 
 	ax.autoscale()
 	ax.margins(0.1)
+	ax.set_aspect('equal', adjustable='box')
 	plt.show()
 
-
-def pathSearch(startpos, endpos, obstacles, n_iter, radius, stepSize):
-	G = RRT_star(startpos, endpos, obstacles, n_iter, radius, stepSize)
-	if G.success:
-		path = dijkstra(G)
-		# plot(G, obstacles, radius, path)
-		return path
 
 
 if __name__ == '__main__':
 	startpos = (0., 0.)
 	endpos = (5., 5.)
-	obstacles = [(1., 1.), (2., 2.)]
+	obstacles = [(1., 1.), (2., 2.), (3.5, 3.5), (2, 4), (4, 1)]
 	n_iter = 200
 	radius = 0.5
 	stepSize = 0.7
 
-	G = RRT_star(startpos, endpos, obstacles, n_iter, radius, stepSize)
-	# G = RRT(startpos, endpos, obstacles, n_iter, radius, stepSize)
+	G = RRT(startpos, endpos, obstacles, n_iter, radius, stepSize)
 
 	if G.success:
 		path = dijkstra(G)
-		print(path)
+		path = simplify_path(path, obstacles, radius)
+		#print(path)
 		plot(G, obstacles, radius, path)
 	else:
 		plot(G, obstacles, radius)
