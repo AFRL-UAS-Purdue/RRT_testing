@@ -7,36 +7,21 @@ Notes:
 	How often to plan a new route?
 	-When a new obstacle data comes from octomap
 		-When endpoint is determined to be inside of an obstacle
-	-When the rover is a certain distance away from the last endpoint
 	-When the drone reaches the endpoint
-	
-	How to determine and endpoint given a rover location?
-	-Draw a ring around the rover and make the endpoint the closest point on the ring to the drone
-	-Point must not be inside of an obstacle
-	-Ideally the endpoint should be behind the rover so that it can see the rover while flying forward
 	
 	How to determine z dimension?
 	-Fly at the height neccessary to keep the drone in the vertical center of the camera FOV
-		-Need to decide on a camera angle
-		-If we can't change angle, just pick a good angle from the rover to maintain
-	-Ignore tunnel and just go around it?
-	
-	How to determine the yaw direction of the drone?
-	-Either point directly at the rover or in the direction of travel
-		-Direction of travel better for obstacle avoidance and at rover better for object tracking
-	-Should point at the rover once it is near or has reached the rover
+		-Need to know camera FOV
 	
 	-Need to find a step size and iteration number that works for the competition environment
 	
-	-Need to be set up for arbitrary obstacle shapes instead of just circles
+	Need to be set up for arbitrary obstacle shapes instead of just circles
+	-Could try making lines that are offset from the obstacle, then check for intersections
+		-Would need to extend lines so that they intersect at corners
 	
-Needed inputs from rover tracking:
-	-Current position of rover when in view
-	
-	Path planning could do these if needed:
-	-Velocity vector of rover
-	-Predicted position of rover when out of view
-		-probably just use last velocity vector to keep updating position
+	Needed inputs from rover tracking:
+	-Current rover position and velocity
+	-Velocity calculated using positions over time
 '''
 
 import numpy as np
@@ -124,7 +109,7 @@ def newVertex(randvex, nearvex, stepSize):
 
 
 def window(startpos, endpos):
-	''' Define seach window - 2 times of start to end rectangle'''
+	''' Define seach window - 2 times of start to end rectangle '''
 	width = endpos[0] - startpos[0]
 	height = endpos[1] - startpos[1]
 	winx = startpos[0] - (width / 2.)
@@ -133,7 +118,7 @@ def window(startpos, endpos):
 
 
 def isInWindow(pos, winx, winy, width, height):
-	''' Restrict new vertex insides search window'''
+	''' Restrict new vertex insides search window '''
 	if winx < pos[0] < winx+width and \
 		winy < pos[1] < winy+height:
 		return True
@@ -203,7 +188,6 @@ def RRT(startpos, endpos, obstacles, n_iter, radius, stepSize):
 		G.add_edge(newidx, nearidx, dist)
 
 		dist = distance(newvex, G.endpos)
-		#if dist < 2 * radius:
 		if not isThruObstacle(Line(newvex, G.endpos), obstacles, radius):
 			endidx = G.add_vex(G.endpos)
 			G.add_edge(newidx, endidx, dist)
@@ -214,9 +198,7 @@ def RRT(startpos, endpos, obstacles, n_iter, radius, stepSize):
 
 
 def simplify_path(path, obstacles, radius):
-	'''
-	minimizes the number of segments in path
-	'''
+	''' Minimizes the number of segments in path '''
 	p0idx = 0
 	p1idx = 1
 	newPath = [0 for i in range(len(path))]
@@ -248,9 +230,7 @@ def simplify_path(path, obstacles, radius):
 
 
 def dijkstra(G):
-	'''
-	Dijkstra algorithm for finding shortest path from start position to end.
-	'''
+	''' Dijkstra algorithm for finding shortest path from start position to end '''
 	srcIdx = G.vex2idx[G.startpos]
 	dstIdx = G.vex2idx[G.endpos]
 
@@ -283,10 +263,8 @@ def dijkstra(G):
 
 
 
-def plot(G, obstacles, radius, path=None):
-	'''
-	Plot RRT, obstacles and shortest path
-	'''
+def plot(G, obstacles, radius, roverpos, path=None):
+	''' Plot RRT, obstacles and shortest path '''
 	px = [x for x, y in G.vertices]
 	py = [y for x, y in G.vertices]
 	fig, ax = plt.subplots()
@@ -298,6 +276,8 @@ def plot(G, obstacles, radius, path=None):
 	ax.scatter(px, py, c='cyan')
 	ax.scatter(G.startpos[0], G.startpos[1], c='black')
 	ax.scatter(G.endpos[0], G.endpos[1], c='black')
+	ax.scatter(roverpos[0], roverpos[1], c='green')
+	
 
 	lines = [(G.vertices[edge[0]], G.vertices[edge[1]]) for edge in G.edges]
 	lc = mc.LineCollection(lines, colors='green', linewidths=2)
@@ -315,20 +295,58 @@ def plot(G, obstacles, radius, path=None):
 
 
 
+def getEndpos(obstacles, velocity, roverpos, roverRadius):
+	''' Get end position based on the rover position and velocity - 
+	End position is behind the rover so that the drone can see the
+	rover as it follows '''
+	angleStp = 0.35 #angle step size (radians)
+	angle1 = np.pi
+	angle2 = np.pi
+	angle = np.pi
+	cw = True
+	while True:
+		oppositeVec = np.matmul(([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]), velocity)
+		oppositeVec = oppositeVec / np.linalg.norm(oppositeVec)
+		oppositeVec = roverpos + oppositeVec * roverRadius
+		endpos = (oppositeVec[0][0], oppositeVec[1][0])
+		if not isInObstacle(endpos, obstacles, radius):
+			break;
+		else:
+			if cw:
+				angle1 = angle1 - angleStp
+				angle = angle1
+				cw = False
+			else:
+				angle2 = angle2 + angleStp
+				angle = angle2
+				cw = True
+
+	return endpos
+
+
+
 if __name__ == '__main__':
-	startpos = (0., 0.)
-	endpos = (5., 5.)
+	
+	''' Parameters '''
+	startpos = (0., 0.) #Latest drone position
+	roverpos = (5., 5.) #Latest rover position
+	velocity = ([[1], [1]]) #Latest velocity of the rover (global)
+	roverRadius = 1 #Distance from the rover that the drone should follow from
+	n_iter = 200 #Maximum number of RRT iterations
+	stepSize = 0.7 #Length of RRT segments
+	
+	''' Temporary test obstacles '''
 	obstacles = [(1., 1.), (2., 2.), (3.5, 3.5), (2, 4), (4, 1)]
-	n_iter = 200
 	radius = 0.5
-	stepSize = 0.7
+
+	endpos = getEndpos(obstacles, velocity, roverpos, roverRadius)
 
 	G = RRT(startpos, endpos, obstacles, n_iter, radius, stepSize)
 
 	if G.success:
 		path = dijkstra(G)
 		path = simplify_path(path, obstacles, radius)
-		#print(path)
-		plot(G, obstacles, radius, path)
+		print(path)
+		plot(G, obstacles, radius, roverpos, path)
 	else:
 		plot(G, obstacles, radius)
